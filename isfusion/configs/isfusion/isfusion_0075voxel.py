@@ -7,7 +7,7 @@ voxel_size = [0.075, 0.075, 0.2]
 point_cloud_range = [-54, -54, -5, 54, 54, 3]
 img_scale = (384, 1056)
 
-total_epochs = 2
+total_epochs = 8
 
 res_factor = 1
 out_size_factor = 8
