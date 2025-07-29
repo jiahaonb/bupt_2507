@@ -78,12 +78,11 @@ def parse_args():
         'submit it to the test server')
     # 可选参数：保存结果的目录
     parser.add_argument(
-        '--result_dir', help='directory where results are saved',
-        default='/home/lishengjie/study/jiahao/bupt_2507/isfusion/output/results/')
+        '--result_dir', help='directory where results are saved')
     parser.add_argument(
         '--bs',
         type=int,
-        default=4,
+        default=1,
         help='batch size')
     # 可选参数：评估指标
     parser.add_argument(
@@ -97,8 +96,7 @@ def parse_args():
     # 可选参数：是否显示BEV（鸟瞰图）结果
     parser.add_argument('--show_bev', action='store_true', help='show bev results', default=False)
     parser.add_argument(
-        '--show_dir', help='directory where results will be saved',
-        default='/home/lishengjie/study/jiahao/bupt_2507/isfusion/output/shows/')
+        '--show_dir', help='directory where results will be saved')
     parser.add_argument(
         '--gpu-collect',
         action='store_true',

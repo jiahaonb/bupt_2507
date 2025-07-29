@@ -286,32 +286,31 @@ class DynamicSimpleVFE(nn.Module):
 
 @VOXEL_ENCODERS.register_module()
 class DynamicVFE(nn.Module):
-    """Dynamic Voxel feature encoder used in DV-SECOND.
+    """Dynamic Voxel Feature Encoder (动态体素特征编码器).
+    
+    该模块是 HSF (Hierarchical Scene Fusion) 的核心实现。
+    它负责对动态体素化后的点云进行特征编码，并在该过程中融合图像特征。
+    与传统的VFE不同，它处理的是一个batch中所有点的集合，而不是固定大小的体素。
 
-    It encodes features of voxels and their points. It could also fuse
-    image feature into voxel features in a point-wise manner.
-    The number of points inside the voxel varies.
+    核心流程:
+    1.  可选的几何特征增强 (距离、簇中心偏移、体素中心偏移)。
+    2.  通过一系列 DynamicVFELayer 对每个点进行特征编码。
+    3.  在编码层之间，通过特征广播(scatter-gather)让每个点感知其所在体素的上下文。
+    4.  在特征编码过程中，调用 fusion_layer (如PointFusion) 将图像特征逐点融合进来。
+    5.  最终，将所有点的特征通过 DynamicScatter 聚合为体素特征。
 
     Args:
-        in_channels (int): Input channels of VFE. Defaults to 4.
-        feat_channels (list(int)): Channels of features in VFE.
-        with_distance (bool): Whether to use the L2 distance of points to the
-            origin point. Default False.
-        with_cluster_center (bool): Whether to use the distance to cluster
-            center of points inside a voxel. Default to False.
-        with_voxel_center (bool): Whether to use the distance to center of
-            voxel for each points inside a voxel. Default to False.
-        voxel_size (tuple[float]): Size of a single voxel. Default to
-            (0.2, 0.2, 4).
-        point_cloud_range (tuple[float]): The range of points or voxels.
-            Default to (0, -40, -3, 70.4, 40, 1).
-        norm_cfg (dict): Config dict of normalization layers.
-        mode (str): The mode when pooling features of points inside a voxel.
-            Available options include 'max' and 'avg'. Default to 'max'.
-        fusion_layer (dict | None): The config dict of fusion layer used in
-            multi-modal detectors. Default to None.
-        return_point_feats (bool): Whether to return the features of each
-            points. Default to False.
+        in_channels (int): 输入点特征的维度 (例如, x, y, z, intensity -> 4)。
+        feat_channels (list(int)): VFE中间层的特征维度列表。
+        with_distance (bool): 是否在点特征中加入点到原点的距离。
+        with_cluster_center (bool): 是否在点特征中加入点到其体素簇中心的偏移量。
+        with_voxel_center (bool): 是否在点特征中加入点到其体素几何中心的偏移量。
+        voxel_size (tuple[float]): 体素的尺寸 (vx, vy, vz)。
+        point_cloud_range (tuple[float]): 点云的有效范围。
+        norm_cfg (dict): 归一化层的配置字典。
+        mode (str): 在 `vfe_scatter` 中使用的池化模式 ('max' 或 'avg')。
+        fusion_layer (dict | None): 用于融合多模态特征的融合层配置 (例如 PointFusion)。
+        return_point_feats (bool): 是否返回逐点的特征而不是聚合后的体素特征。
     """
 
     def __init__(self,
@@ -458,21 +457,23 @@ class DynamicVFE(nn.Module):
                 img_metas=None,
                 mode=None,
                 **kwargs):
-        """Forward functions.
+        """DynamicVFE 的前向传播函数.
 
         Args:
-            features (torch.Tensor): Features of voxels, shape is NxC.
-            coors (torch.Tensor): Coordinates of voxels, shape is  Nx(1+NDim).
-            points (list[torch.Tensor], optional): Raw points used to guide the
-                multi-modality fusion. Defaults to None.
-            img_feats (list[torch.Tensor], optional): Image fetures used for
-                multi-modality fusion. Defaults to None.
-            img_metas (dict, optional): [description]. Defaults to None.
+            features (torch.Tensor): 一个batch中所有点的原始特征 (N_total, C_in), 
+                                     其中 N_total 是所有样本点的总和。
+            coors (torch.Tensor): 每个点对应的体素坐标 (N_total, 4)，
+                                  格式为 (batch_id, z, y, x)。
+            points (list[torch.Tensor], optional): 每个样本的原始点云列表。
+                                                 用于在融合时找到每个batch的有效点。
+            img_feats (list[torch.Tensor], optional): 从图像主干网络提取的特征图列表。
+                                                     用于与点特征进行融合。
+            img_metas (dict, optional): 图像和点云的元信息。
+            mode (str, optional): 不同的前向模式，用于不同的模型。
 
         Returns:
-            tuple: If `return_point_feats` is False, returns voxel features and
-                its coordinates. If `return_point_feats` is True, returns
-                feature of each points inside voxels.
+            tuple: 返回聚合后的体素特征和对应的体素坐标。
+                   (voxel_feats, voxel_coors)
         """
 
         if mode=='MVXNet':
@@ -491,16 +492,16 @@ class DynamicVFE(nn.Module):
 
         else:
             features_ls = [features]
-            # Find distance of x, y, and z from cluster center
+            # 1. 几何特征增强
+            # 计算点与其所属体素的点云簇中心的偏移
             if self._with_cluster_center:
                 voxel_mean, mean_coors = self.cluster_scatter(features, coors)
                 points_mean = self.map_voxel_center_to_point(
                     coors, voxel_mean, mean_coors)
-                # TODO: maybe also do cluster for reflectivity
                 f_cluster = features[:, :3] - points_mean[:, :3]
                 features_ls.append(f_cluster)
 
-            # Find distance of x, y, and z from pillar center
+            # 计算点与其所属体素的几何中心的偏移
             if self._with_voxel_center:
                 f_center = features.new_zeros(size=(features.size(0), 3))
                 f_center[:, 0] = features[:, 0] - (
@@ -511,6 +512,7 @@ class DynamicVFE(nn.Module):
                         coors[:, 1].type_as(features) * self.vz + self.z_offset)
                 features_ls.append(f_center)
 
+            # 计算点到坐标系原点的距离
             if self._with_distance:
                 points_dist = torch.norm(features[:, :3], 2, 1, keepdim=True)
                 features_ls.append(points_dist)
@@ -521,29 +523,46 @@ class DynamicVFE(nn.Module):
                     painted_points = self.fusion_layer[i](painted_points)
                 features_ls.append(painted_points)
 
-            # original
+            # 2. 逐点特征编码与多模态融合
+            # 将所有增强后的特征拼接起来
             features = torch.cat(features_ls, dim=-1)
             for i, vfe in enumerate(self.vfe_layers):
+                # 通过 VFE 层 (线性层) 对每个点进行特征编码
                 point_feats = vfe(features)
+                
+                # HSF核心：在第一个VFE层后，如果配置了fusion_layer且有图像特征输入，
+                # 则执行点云与图像特征的融合。
                 if (i == 0 and self.fusion_layer is not None
                         and img_feats is not None):
+                    # 获取有效点的mask
                     mask = kwargs.get('mask', None)
                     valid_voxle_num = [len(ele) for ele in points]
                     start_idx = 0
+                    # 遍历batch中的每个样本
                     for b in range(len(mask)):
-                        point_feats[start_idx:start_idx+valid_voxle_num[b]][mask[b]] = self.fusion_layer(torch.cat([point_feats[start_idx:start_idx+valid_voxle_num[b]][mask[b]], img_feats[b]], dim=1))
+                        # 将当前样本的有效点特征与对应的图像特征拼接
+                        fused_feats_input = torch.cat([point_feats[start_idx:start_idx+valid_voxle_num[b]][mask[b]], img_feats[b]], dim=1)
+                        # 通过融合层(通常是一个线性层)统一维度
+                        fused_feats_output = self.fusion_layer(fused_feats_input)
+                        # 将融合后的特征写回原位
+                        point_feats[start_idx:start_idx+valid_voxle_num[b]][mask[b]] = fused_feats_output
                         start_idx += valid_voxle_num[b]
+                
+                # 3. 体素特征聚合
+                # 使用 DynamicScatter 将点特征聚合到其对应的体素中 (通常是max-pooling)
                 voxel_feats, voxel_coors = self.vfe_scatter(point_feats, coors)
+                
+                # 4. 特征广播 (为下一次VFE循环准备)
                 if i != len(self.vfe_layers) - 1:
-                    # need to concat voxel feats if it is not the last vfe
+                    # 将聚合后的体素特征"广播"回每个点
                     feat_per_point = self.map_voxel_center_to_point(
                         coors, voxel_feats, voxel_coors)
+                    # 将广播回来的体素上下文特征与当前点的特征拼接，作为下个VFE层的输入
                     features = torch.cat([point_feats, feat_per_point], dim=1)
-
-
 
             if self.return_point_feats:
                 return point_feats
+            # 返回最终的体素特征及其坐标
             return voxel_feats, voxel_coors
 
             # AutoAlign v2

@@ -470,6 +470,25 @@ def multi_head_attention_forward(query,  # type: Tensor
         return attn_output, None
 
 class Instane2SceneAtt(nn.Module):
+    """实例到场景注意力 (Instance-to-Scene Attention)。
+
+    这是 IGF 中将实例信息广播回场景的模块。
+    它的主要作用是将在 `InsContextAtt` 中经过增强的、富含高级语义的实例特征，
+    反向融合回整个场景的BEV特征图中，从而让全局特征都能感知到物体的存在。
+
+    工作流程:
+    1.  输入 `key` (增强后的实例特征, `x_ins`) 和 `query` (原始的、待更新的BEV特征, `bev_feats`)。
+    2.  `key` 作为 attention 中的 Key 和 Value, `query` 作为 Query。
+    3.  通过一个标准的多头自注意力 (`MultiheadAttention`)，计算 `query` 对 `key` 的注意力权重。
+        这意味着场景中的每个位置都会计算与所有实例的相似度。
+    4.  将注意力权重应用于 `key` (实例特征)，得到的结果加回到原始的 `query` (场景特征)上。
+    5.  这样，每个场景位置都根据其与各个实例的关联度，聚合了实例信息，完成了场景特征的更新。
+
+    Args:
+        d_model (int): 模型维度。
+        nhead (int): 注意力头数。
+        dropout (float): Dropout概率。
+    """
     def __init__(self, d_model, nhead=8, dropout=0.1):
         super().__init__()
 
@@ -479,9 +498,16 @@ class Instane2SceneAtt(nn.Module):
 
     def forward(self, query, key, query_scene, bs, bev_size, attn_mask=None):
         """
-        :param query: B C N
-        :param query_pos: B N 2
-        :return:
+        Args:
+            query (Tensor): 待更新的BEV特征 (B, C, H*W)。
+            key (Tensor): 经过上下文增强的实例特征 (B, C, N_ins)。
+            query_scene (Tensor): 原始场景特征图 (B, C, H, W)。
+            bs (int): 批量大小。
+            bev_size (int): BEV尺寸。
+            attn_mask (Tensor, optional): 注意力掩码。
+
+        Returns:
+            Tensor: 融合了实例信息后的BEV特征。
         """
 
         query = query.permute(2, 0, 1)
@@ -766,6 +792,28 @@ class DeformableTransformerDecoder(nn.Module):
 
 
 class InsContextAtt(nn.Module):
+    """实例-上下文注意力 (Instance-Context Attention)。
+
+    这是 IGF 中实现实例特征增强的核心模块。
+    它的主要作用是让每一个 "实例查询" (instance query) 去主动地关注和融合
+    它自己感兴趣的场景上下文信息。
+
+    工作流程:
+    1.  输入 `query_feats` (N个实例的初始特征) 和 `query_pos` (这N个实例的位置)。
+    2.  `query_pos` 经过 `query_pos_embed` 编码为位置嵌入。
+    3.  `scene_feats` (完整的场景BEV特征) 和其位置编码 `key_pos_embed` 作为Key和Value。
+    4.  通过一个或多个 `DeformableTransformerDecoderLayer`，`query_feats` 作为Query，
+        对 `scene_feats` 进行可变形的注意力操作(deformable attention)。
+        这种注意力机制允许每个实例查询只从场景中采样少数几个关键点（由网络学习偏移量），
+        而不是计算全局注意力，从而高效地聚合了最相关的上下文信息。
+    5.  输出经过上下文信息增强后的实例特征。
+
+    Args:
+        num_layers (int): DeformableTransformerDecoderLayer 的层数。
+        embed_dims (int): 嵌入维度。
+        bev_size (int): BEV特征图的大小。
+        n_points (int): 可变形注意力中的采样点数。
+    """
     def __init__(self,
                  num_layers=1,
                  embed_dims=128,
@@ -793,6 +841,16 @@ class InsContextAtt(nn.Module):
                 m._reset_parameters()
 
     def forward(self, query_feats, query_pos, bev_pos, scene_feats=None, **kwargs):
+        """
+        Args:
+            query_feats (Tensor): 实例查询的特征 (B, C, N_ins)。
+            query_pos (Tensor): 实例查询的位置 (B, N_ins, 2)。
+            bev_pos (Tensor): BEV特征图的坐标网格 (B, H*W, 2)。
+            scene_feats (Tensor): 完整的场景BEV特征 (B, C, H, W)。
+
+        Returns:
+            Tensor: 经过上下文增强的实例特征 (B, C, N_ins)。
+        """
 
         scene_feats = scene_feats.permute(0, 1, 3, 2)
 
@@ -832,14 +890,33 @@ class InsContextAtt(nn.Module):
 
 @FUSION_LAYERS.register_module()
 class ISFusionEncoder(BaseModule):
+    """多模态融合编码器 (ISFusionEncoder)。
 
-    """
-    Attention with both self and cross
-    Implements the decoder in DETR transformer.
+    该模块是 ISFusion 模型的核心，负责融合来自不同传感器的信息，
+    并实现 HSF (Hierarchical Scene Fusion) 和 IGF (Instance-Guided Fusion) 两个关键机制。
+
+    HSF (分层场景融合) 体现在:
+    1.  `conv_fusion`: 将初步对齐的图像BEV特征和激光雷达BEV特征进行通道拼接和卷积，实现基础的多模态特征融合。
+    2.  `grid2region_att`: 借鉴SST(Swin-Transformer-based)的思路，通过多层级的窗口化自注意力机制，
+        让BEV特征在不同粒度（从细小的 grid 到较大的 region）上进行上下文信息交互，从而学习到分层的场景表示。
+
+    IGF (实例引导融合) 体现在:
+    1.  `instance_fusion` 方法: 这是IGF的核心。该方法首先在一个分离的、临时的分支上预测一个实例热力图
+        (instance heatmap)，用于定位潜在物体的位置。
+    2.  实例采样: 根据热力图，从场景特征中选出分数最高的 top-k 个位置作为"实例查询" (instance queries)。
+    3.  实例-上下文交互:
+        - `InsContextAtt`: 每个实例查询会利用可变形注意力 (deformable attention) 与其周围的场景上下文
+          (scene context) 进行交互，从而编码出关注了局部环境的实例特征。
+        - `Instane2SceneAtt`: 编码后的实例特征，再反过来通过注意力机制将其信息广播 (broadcast) 回整个
+          BEV 场景特征图，从而让场景中的每个位置都能感知到高级实例的存在。
+    4.  通过这种“先检测潜在实例，再用实例信息指导场景特征优化”的闭环，模型得以生成一个实例感知的、
+        高质量的融合BEV特征，送入后续的检测头进行精确的3D目标检测。
+
     Args:
-        return_intermediate (bool): Whether to return intermediate outputs.
-        coder_norm_cfg (dict): Config of last normalization layer. Default：
-            `LN`.
+        num_points_in_pillar (int): 每个柱体中的点数。
+        embed_dims (int): 嵌入维度。
+        num_classes (int): 物体类别数。
+        **kwargs: 其他配置参数，如 'bev_size', 'num_views' 等。
     """
 
     def __init__(self,  num_points_in_pillar=10, embed_dims=256, num_classes=10, **kwargs):
@@ -1044,6 +1121,12 @@ class ISFusionEncoder(BaseModule):
         return reference_voxel_cam, mask, sampled_feats
 
     def img_fv_to_bev(self, mlvl_feats, bs, **kwargs):
+        """
+        将多视图(Front View)的图像特征转换为鸟瞰图(BEV)特征。
+        通过将3D空间中的体素(pillar)中心点投影到各个相机视图中，
+        然后对投影位置的图像特征进行采样(grid_sample)，最后将采样到的
+        多视角特征进行聚合，并填充回BEV空间对应的位置。
+        """
 
         pts_metas = kwargs['pts_metas']
         pillars = pts_metas['pillars'][..., :3]
@@ -1088,15 +1171,46 @@ class ISFusionEncoder(BaseModule):
 
 
     def instance_fusion(self, bev_feats, scene_feats, bs, **kwargs):
+        """实例引导融合 (Instance-Guided Fusion, IGF) 的核心实现。
+
+        该方法遵循 "detect first, then fuse" 的思想，通过一个闭环来优化BEV特征：
+        1. 预测实例热力图 (Detect): 使用一个轻量级的卷积头 (`conv_heatmap`, `heatmap_head_*`)
+           在一个分离的(detached)BEV特征分支上，快速预测出各个类别物体可能存在的位置热力图。
+           这相当于一个临时的、粗糙的第一阶段检测。
+        2. 提取实例级查询 (Sample): 对热力图执行NMS(通过max_pool2d实现)以抑制冗余，
+           然后选取分数最高的 top-k 个点作为“实例查询”(instance queries)。这些查询代表了
+           场景中最可能包含物体的区域中心点(query_pos)及其初始特征(x_ins)。
+        3. 实例-上下文交互 (Fuse-Part 1):
+           - 将提取出的实例查询(x_ins, query_pos)送入 `instance_att` (即`InsContextAtt`模块)。
+           - 在 `InsContextAtt` 中，每个实例查询会使用可变形注意力机制，主动地、自适应地
+             从完整的场景特征(scene_feats)中采样和聚合信息。这使得实例特征能够编码其周围的关键上下文。
+        4. 实例-场景交互 (Fuse-Part 2):
+           - 将经过上下文增强的实例特征(x_ins)送入 `instance_to_scene_att` (即`Instane2SceneAtt`模块)。
+           - 在 `Instane2SceneAtt` 中，这些富含高级语义的实例特征会通过自注意力机制，将它们的信息
+             广播并融入(add)到原始的场景特征(scene_feats)中。
+        5. 输出: 返回经过实例信息增强后的场景特征(return_features)和一个用于辅助训练的实例热力图(ins_heatmap)。
+
+        Args:
+            bev_feats (Tensor): 鸟瞰图(BEV)特征。
+            scene_feats (Tensor): 场景特征。
+            bs (int): 批量大小。
+
+        Returns:
+            Tuple[Tensor, Tensor]: 返回增强后的特征和实例热力图。
+        """
 
         bev_pos = self.bev_pos.repeat(bs, 1, 1).to(bev_feats.device)
         out = bev_feats.permute(0, 1, 3, 2).contiguous()
 
+        # --- 1. 预测实例热力图 ---
+        # 使用一个分离的卷积头预测实例中心的热力图
         ins_heatmap = self.conv_heatmap(out.clone().detach())
         ins_heatmap=self.heatmap_head_1(ins_heatmap)
         ins_heatmap=self.heatmap_head_2(ins_heatmap)
         ins_heatmap=self.heatmap_head_3(ins_heatmap)
 
+        # --- 2. 提取实例级查询 ---
+        # 使用NMS（通过max_pool2d实现）来抑制冗余的检测框
         heatmap = ins_heatmap.detach().sigmoid()
         padding = self.nms_kernel_size // 2
         local_max = torch.zeros_like(heatmap)
@@ -1125,9 +1239,11 @@ class ISFusionEncoder(BaseModule):
         heatmap = heatmap * (heatmap == local_max)
         heatmap = heatmap.view(bs, heatmap.shape[1], -1)
 
+        # 从热力图中选择 top-k 的提议作为实例
         instance_num = self.instance_num
         top_proposals = heatmap.view(bs, -1).argsort(dim=-1, descending=True)[..., : instance_num]
 
+        # 获取这些实例的位置(query_pos)
         top_proposals_index = top_proposals % heatmap.shape[-1]
         query_pos = bev_pos.gather(index=top_proposals_index[:, None, :].permute(0, 2, 1).expand(-1, -1, bev_pos.shape[-1]),
                                    dim=1)
@@ -1136,13 +1252,18 @@ class ISFusionEncoder(BaseModule):
         query_pos_new[..., 0] = query_pos[..., 1]
         query_pos_new[..., 1] = query_pos[..., 0]
 
+        # 从场景特征中汇集实例特征(x_ins)
         x_scene = self.conv_scene(bev_feats.permute(0, 1, 3, 2))
         x_scene_flatten = x_scene.view(bs, x_scene.shape[1], -1)
         x_ins = x_scene_flatten.gather(index=top_proposals_index[:, None, :].expand(-1, x_scene.shape[1], -1),
                                                   dim=-1)
 
+        # --- 3. 实例-上下文交互 ---
+        # 实例查询与场景上下文进行交互，编码局部环境信息
         x_ins = self.instance_att(x_ins, query_pos_new, bev_pos, scene_feats=x_scene, **kwargs)
 
+        # --- 4. 实例-场景交互 ---
+        # 增强后的实例特征反过来指导场景特征的更新
         bev_feats = self.conv_ins(bev_feats).flatten(2, 3)
         return_features = self.instance_to_scene_att(bev_feats, x_ins, scene_feats, bs, self.bev_size)
 

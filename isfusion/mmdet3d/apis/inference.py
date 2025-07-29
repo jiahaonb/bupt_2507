@@ -137,12 +137,26 @@ def inference_multi_modality_detector(model, pcd, image, ann_file):
     box_type_3d, box_mode_3d = get_box_type(cfg.data.test.box_type_3d)
     # get data info containing calib
     data_infos = mmcv.load(ann_file)
-    image_idx = int(re.findall(r'\d+', image)[-1])  # xxx/sunrgbd_000017.jpg
-    for x in data_infos:
-        if int(x['image']['image_idx']) != image_idx:
-            continue
-        info = x
-        break
+
+    # Find the info dict corresponding to the input image
+    info = None
+    matched_cam_info = None
+    input_filename = osp.basename(image)
+    for x in data_infos['infos']:
+        # Iterate over all cameras in the current sample
+        for cam_name, cam_info in x['cams'].items():
+            if osp.basename(cam_info['data_path']) == input_filename:
+                info = x
+                matched_cam_info = cam_info
+                break
+        if info is not None:
+            break
+    
+    # If no matching info is found, raise an error
+    if info is None:
+        raise ValueError(f'Could not find matching data for image {input_filename} '
+                         f'in annotation file {ann_file}')
+
     data = dict(
         pts_filename=pcd,
         img_prefix=osp.dirname(image),
@@ -156,26 +170,26 @@ def inference_multi_modality_detector(model, pcd, image, ann_file):
         bbox_fields=[],
         mask_fields=[],
         seg_fields=[])
+        
+    # Pass sensor-related info to the pipeline
+    # This is crucial for nuScenes data
+    data.update(dict(Lidar2ego=info['lidar2ego'])) # Pass lidar to ego matrix
+    
+    # Some pipelines might need sweeps data, so we pass it
+    if 'sweeps' in info:
+        data['sweeps'] = info['sweeps']
+
     data = test_pipeline(data)
 
-    # TODO: this code is dataset-specific. Move lidar2img and
-    #       depth2img to .pkl annotations in the future.
-    # LiDAR to image conversion
+    # Manually load lidar2img matrix for nuScenes
     if box_mode_3d == Box3DMode.LIDAR:
-        rect = info['calib']['R0_rect'].astype(np.float32)
-        Trv2c = info['calib']['Tr_velo_to_cam'].astype(np.float32)
-        P2 = info['calib']['P2'].astype(np.float32)
-        lidar2img = P2 @ rect @ Trv2c
-        data['img_metas'][0].data['lidar2img'] = lidar2img
-    # Depth to image conversion
-    elif box_mode_3d == Box3DMode.DEPTH:
-        rt_mat = info['calib']['Rt']
-        # follow Coord3DMode.convert_point
-        rt_mat = np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]
-                           ]) @ rt_mat.transpose(1, 0)
-        depth2img = info['calib']['K'] @ rt_mat
-        data['img_metas'][0].data['depth2img'] = depth2img
-
+        if 'lidar2img' in matched_cam_info:
+            lidar2img = np.array(matched_cam_info['lidar2img'])
+            data['img_metas'][0].data['lidar2img'] = lidar2img
+        else:
+            raise ValueError('lidar2img matrix not found in annotation. '
+                             'Please check your data preprocessing steps.')
+    
     data = collate([data], samples_per_gpu=1)
     if next(model.parameters()).is_cuda:
         # scatter to specified GPU
@@ -190,7 +204,6 @@ def inference_multi_modality_detector(model, pcd, image, ann_file):
     with torch.no_grad():
         result = model(return_loss=False, rescale=True, **data)
     return result, data
-
 
 def inference_mono_3d_detector(model, image, ann_file):
     """Inference image with the monocular 3D detector.

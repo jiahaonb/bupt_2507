@@ -118,7 +118,6 @@ data
 *.pkl
 *.pkl.json
 *.log.json
-work_dirs/
 exps/
 *~
 mmdet3d/.mim
