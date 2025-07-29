@@ -7,7 +7,7 @@ voxel_size = [0.075, 0.075, 0.2]
 point_cloud_range = [-54, -54, -5, 54, 54, 3]
 img_scale = (384, 1056)
 
-total_epochs = 10
+total_epochs = 2
 
 res_factor = 1
 out_size_factor = 8
@@ -430,7 +430,7 @@ log_config = dict(
 dist_params = dict(backend='nccl')
 log_level = 'INFO'
 work_dir = None
-load_from = 'data/pretrain_models/swint-nuimages-pretrained-e2e.pth'
+load_from = '/home/lishengjie/study/jiahao/bupt_2507/isfusion/data/swint-nuimages-pretrained-e2e.pth'
 resume_from = None
 workflow = [('train', 1)]
 gpu_ids = range(0, 8)

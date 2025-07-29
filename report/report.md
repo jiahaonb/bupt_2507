@@ -93,10 +93,25 @@ pip install -r requirements.txt
 完成了环境的配置，就可以开始进行数据集的配置了。我们按照官网的配置，链接了我们的数据集：由于我们准备的是nuscenes-mini数据集，但是要求要放在`mmdetection3d/data/nuscenes`目录下。所以我们创建软链接：
 
 ```bash
-ln -s /home/lishengjie/data/nuscenes-mini /home/lishengjie/study/jiahao/bupt_2507/ISFusion/mmdetection3d/data/nuscenes
+ln -s /home/lishengjie/data/nuscenes-mini /home/lishengjie/study/jiahao/bupt_2507/ISFusion/data/nuscenes
 ```
 
 然后对数据集进行配置：
+
+```bash
+python tools/create_data.py nuscenes --root-path ./data/nuscenes --out-dir ./data/nuscenes --extra-tag nuscenes --version v1.0-mini
+```
+
+我们可以观察到，这里的
+
+### 2.3 模型训练
+
+我们可以看到，在`tools/train.py`中，有对应的训练代码。然后我们可以调用`tools/run-nus.sh`，来针对性地对这个nuscenes数据集进行处理，并且开始训练的过程。\
+
+```bash
+bash tools/run-nus.sh nus-exp001
+```
+
 
 
 
