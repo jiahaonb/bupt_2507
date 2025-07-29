@@ -12,6 +12,8 @@
 
 # 提要内容：
 
+数据集：为nuscenes-mini数据集。由于过大，没有添加。官网：[Nuscenes](https://www.nuscenes.org/) `https://www.nuscenes.org/`
+
 项目代码：本仓库，或附件压缩包；`https://github.com/jiahaonb/bupt_2507`
 训练日志即权重：代码`isfusion/work_dirs`目录下；
 结果报告：`report/report.md`；附件pdf版本；
