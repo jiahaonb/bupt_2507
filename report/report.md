@@ -109,9 +109,10 @@ python tools/create_data.py nuscenes --root-path ./data/nuscenes --out-dir ./dat
 我们可以看到，在`tools/train.py`中，有对应的训练代码。然后我们可以调用`tools/run-nus.sh`，来针对性地对这个nuscenes数据集进行处理，并且开始训练的过程。\
 
 ```bash
-bash tools/run-nus.sh nus-exp001
+bash tools/run-nus.sh 'tag'
 ```
 
+后面设置‘tag’，方便我们查看log以及训练数据等。
 
 
 
