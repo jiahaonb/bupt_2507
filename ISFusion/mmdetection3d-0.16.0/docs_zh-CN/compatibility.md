@@ -1,1 +1,0 @@
-# 和过去版本的 MMDetection3D 的兼容性
