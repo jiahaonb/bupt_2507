@@ -1143,6 +1143,12 @@ tensorboard --logdir=./result
 /home/lishengjie/miniconda3/envs/mask_rcnn/bin/tensorboard --logdir=/home/lishengjie/study/jiahao/bupt_2507/isfusion/work_dirs/isfusion_0075voxel/epoch2/tf_logs --port=9999
 ```
 
+![1753827406755](image/report/1753827406755.png)
+
+我们可以看到，这里面train的时候，loss、grad、heatmap等指标都是下降的，ious指标是上升的。这表明我们训练过程真实有效。这样我们完成了任务4：支持训练过程中的损失曲线、mAP 曲线可视化；
+
+此外，我们对检测框和真实框的可视化是通过`tools/test.py`完成的。这里面有--show和--show_dir，使得我们可以保存数据到目录。我们使用的是open3d进行的可视化。
+
 ## 附录
 
 ### 1. 开源仓库
