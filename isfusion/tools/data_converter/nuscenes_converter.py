@@ -710,3 +710,267 @@ def generate_record(ann_rec: dict, x1: float, y1: float, x2: float, y2: float,
     coco_rec['iscrowd'] = 0
 
     return coco_rec
+
+
+# ===================================================================
+# ===== 请将下面的整个函数代码，添加到 nuscenes_converter.py 的末尾 =====
+# ===================================================================
+
+def _create_kitti_format_infos(nusc,
+                               infos,
+                               kitti_ann_path,
+                               out_dir,
+                               with_velocity=True,
+                               is_train=True):
+    """
+    将 nuScenes info 文件转换为 KITTI 格式。
+    
+    这个函数会创建以下目录结构：
+    - out_dir/
+        - training/ (或 testing/)
+            - image_2/
+            - calib/
+            - label_2/
+            - velodyne/
+    
+    Args:
+        nusc (NuScenes): NuScenes API 对象。
+        infos (list[dict]): 从 create_nuscenes_infos 生成的 info 列表。
+        kitti_ann_path (str): 保存 KITTI 风格标注的总路径。
+        out_dir (str): 输出 KITTI 格式数据的根目录。
+        with_velocity (bool): 是否在标注中包含速度信息。
+        is_train (bool): 当前处理的是否为训练数据。
+    """
+    from mmdet3d.core.bbox.box_np_ops import NuScenesBox
+    from mmdet3d.datasets.kitti_dataset import KittiDataset
+    import shutil
+    from pathlib import Path
+
+    # 定义训练/测试子目录
+    sub_dir = 'training' if is_train else 'testing'
+    kitti_ann_path = Path(kitti_ann_path)
+
+    # 创建必要的子文件夹
+    # kitti_ann_path.mkdir(parents=True, exist_ok=True)
+    (kitti_ann_path / sub_dir).mkdir(parents=True, exist_ok=True)
+    (kitti_ann_path / sub_dir / 'image_2').mkdir(parents=True, exist_ok=True)
+    (kitti_ann_path / sub_dir / 'calib').mkdir(parents=True, exist_ok=True)
+    (kitti_ann_path / sub_dir / 'label_2').mkdir(parents=True, exist_ok=True)
+    (kitti_ann_path / sub_dir / 'velodyne').mkdir(parents=True, exist_ok=True)
+
+    print(f"Start converting to KITTI format, outputting to: {kitti_ann_path / sub_dir}")
+
+    for i, info in enumerate(mmcv.track_iter_progress(infos)):
+        # ----- 1. 准备文件名和路径 -----
+        # 使用样本 token 作为唯一的文件名
+        sample_token = info['token']
+        file_name = sample_token
+
+        # ----- 2. 处理激光雷达点云 (velodyne) -----
+        lidar_path = info['lidar_path']
+        # nuScenes 的点云是 5 维 (x, y, z, intensity, ring_index)
+        points = np.fromfile(lidar_path, dtype=np.float32, count=-1).reshape([-1, 5])
+        # KITTI 需要 4 维 (x, y, z, intensity)
+        points = points[:, :4]
+        # 保存为 .bin 文件
+        velodyne_path = kitti_ann_path / sub_dir / 'velodyne' / f'{file_name}.bin'
+        velodyne_path.parent.mkdir(parents=True, exist_ok=True)
+        points.tofile(str(velodyne_path))
+
+        # ----- 3. 处理相机图像 (image_2) -----
+        # 我们只使用前置摄像头的数据，这是与 KITTI 最接近的
+        cam_front_info = info['cams']['CAM_FRONT']
+        cam_front_path = cam_front_info['data_path']
+        # 使用符号链接以节省空间，而不是复制文件
+        link_path = kitti_ann_path / sub_dir / 'image_2' / f'{file_name}.png'
+        link_path.parent.mkdir(parents=True, exist_ok=True)
+        if link_path.exists():
+            os.remove(str(link_path)) # 如果已存在链接，先删除
+        os.symlink(os.path.abspath(cam_front_path), str(link_path))
+
+        # ----- 4. 处理标定文件 (calib) -----
+        calib_path = kitti_ann_path / sub_dir / 'calib' / f'{file_name}.txt'
+        calib_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # 获取相机内参
+        P2 = cam_front_info['cam_intrinsic'].copy()
+        
+        # 获取从雷达到相机的变换矩阵 (Lidar -> Camera)
+        # 流程: LiDAR -> Ego Vehicle -> Global -> Ego Vehicle' -> Camera
+        # 首先获取从雷达到自车(ego)的变换
+        lidar2ego_r = info['lidar2ego_rotation']
+        lidar2ego_t = info['lidar2ego_translation']
+        lidar2ego_rt = np.eye(4)
+        lidar2ego_rt[:3, :3] = Quaternion(lidar2ego_r).rotation_matrix
+        lidar2ego_rt[:3, 3] = lidar2ego_t
+        
+        # 然后获取从相机到自车(ego)的变换
+        cam2ego_r = cam_front_info['sensor2ego_rotation']
+        cam2ego_t = cam_front_info['sensor2ego_translation']
+        cam2ego_rt = np.eye(4)
+        cam2ego_rt[:3, :3] = Quaternion(cam2ego_r).rotation_matrix
+        cam2ego_rt[:3, 3] = cam2ego_t
+        
+        # 计算雷达到相机的变换矩阵
+        # (Lidar -> Camera) = (Ego -> Camera)^-1 * (Lidar -> Ego)
+        lidar2cam_rt = np.linalg.inv(cam2ego_rt) @ lidar2ego_rt
+        
+        # 将变换矩阵转为 KITTI 格式
+        Tr_velo_to_cam = lidar2cam_rt.reshape((12, )).tolist()
+        
+        # KITTI 中的 R0_rect 是一个 3x3 的单位矩阵，用于校正
+        R0_rect = np.eye(3).reshape((9, )).tolist()
+
+        with open(calib_path, 'w') as f:
+            f.write('P0: ' + ' '.join(map(str, P2.flatten().tolist())) + '\n')
+            f.write('P1: ' + ' '.join(map(str, P2.flatten().tolist())) + '\n')
+            f.write('P2: ' + ' '.join(map(str, P2.flatten().tolist())) + '\n')
+            f.write('P3: ' + ' '.join(map(str, P2.flatten().tolist())) + '\n')
+            f.write('R0_rect: ' + ' '.join(map(str, R0_rect)) + '\n')
+            f.write('Tr_velo_to_cam: ' + ' '.join(map(str, Tr_velo_to_cam)) + '\n')
+            f.write('Tr_imu_to_velo: ' + ' '.join(map(str, np.eye(4).flatten().tolist()[:12])) + '\n')
+
+        # ----- 5. 处理标注文件 (label_2) -----
+        if not is_train:
+            continue
+            
+        label_path = kitti_ann_path / sub_dir / 'label_2' / f'{file_name}.txt'
+        label_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # 获取标注信息
+        gt_boxes = info['gt_boxes'] # 在 nuScenes Lidar 坐标系下
+        gt_names = info['gt_names']
+        gt_velocity = info['gt_velocity']
+
+        anns = []
+        for j, (box, name) in enumerate(zip(gt_boxes, gt_names)):
+            # 跳过不在 KITTI 类别中的物体
+            if name not in KittiDataset.CLASSES:
+                continue
+
+            # 将 nuScenes 坐标系下的 Box 转换为 KITTI 相机坐标系下的 Box
+            # nuScenes Lidar (x forward, y left, z up)
+            # KITTI Camera (x right, y down, z forward)
+            # 首先，将 nuScenes Box 转换到 nuScenes 相机坐标系
+            nusc_box = NuScenesBox(
+                box[:3], box[3:6], Quaternion(axis=[0, 0, 1], radians=box[6]))
+            nusc_box.rotate(Quaternion(lidar2cam_rt[:3, :3]))
+            nusc_box.translate(lidar2cam_rt[:3, 3])
+            
+            # 然后，应用从 nuScenes 相机坐标系到 KITTI 相机坐标系的变换
+            # nuScenes Cam (x right, y down, z forward)
+            # KITTI Cam (z forward, x left, y up) -> (x right, y down, z forward) after conversion
+            # 这是一个标准变换：(x, y, z) -> (y, -z, x)
+            # 但 mmdet3d 的坐标定义已经处理了大部分，我们主要关注旋转
+            # yaw in nuScenes camera frame needs to be converted to alpha in KITTI
+            rot = nusc_box.orientation
+            v = np.dot(rot.rotation_matrix, np.array([1, 0, 0]))
+            yaw = -np.arctan2(v[2], v[0])
+            alpha = yaw - np.arctan2(nusc_box.center[0], nusc_box.center[2]) + np.pi / 2
+            
+            # 维度转换 w, l, h -> h, w, l
+            dims = box[3:6][[2, 0, 1]] # h, w, l
+            
+            # 中心点
+            loc = nusc_box.center
+            
+            # 其他 KITTI 参数，这里用默认值
+            truncated = 0.0
+            occluded = 0
+            
+            # 2D Bbox (这里用一个粗略的投影值，或者设为-1)
+            bbox = [-1, -1, -1, -1]
+            
+            # 拼接成一行标注
+            ann = [name, truncated, occluded, alpha] + bbox + dims.tolist() + loc.tolist() + [yaw]
+            
+            if with_velocity:
+                # 速度转换
+                velo = np.array([*gt_velocity[j], 0.0])
+                velo = velo @ np.linalg.inv(Quaternion(lidar2ego_r).rotation_matrix).T
+                velo = velo @ np.linalg.inv(Quaternion(cam2ego_r).rotation_matrix).T
+                ann += velo[:2].tolist()
+
+            anns.append(' '.join([str(x) for x in ann]) + '\n')
+            
+        with open(label_path, 'w') as f:
+            f.writelines(anns)
+
+
+
+
+# =========================================================
+# ===== 请将下面的主程序代码，也添加到 nuscenes_converter.py 的末尾 =====
+# =========================================================
+
+if __name__ == '__main__':
+    import argparse
+    from nuscenes.nuscenes import NuScenes
+    from pathlib import Path
+
+    # --- 设置命令行参数 ---
+    parser = argparse.ArgumentParser(description='NuScenes to KITTI format converter.')
+    parser.add_argument(
+        '--root_path',
+        type=str,
+        required=True,
+        help='Root path of the nuScenes dataset.')
+    parser.add_argument(
+        '--out_dir',
+        type=str,
+        required=True,
+        help='Output directory for KITTI-style dataset.')
+    parser.add_argument(
+        '--info_prefix',
+        type=str,
+        default='nuscenes',
+        help='Prefix of the .pkl info files.')
+    parser.add_argument(
+        '--version',
+        type=str,
+        default='v1.0-trainval',
+        help='Version of the nuScenes dataset (e.g., "v1.0-trainval", "v1.0-mini").')
+
+    args = parser.parse_args()
+
+    # --- 主逻辑 ---
+    
+    # 确定要转换的数据集部分 (train/val/test)
+    if 'trainval' in args.version:
+        sets_to_convert = ['train', 'val']
+    elif 'mini' in args.version:
+        sets_to_convert = ['train', 'val']
+        args.version = 'v1.0-mini' # 确保版本名正确
+    elif 'test' in args.version:
+        sets_to_convert = ['test']
+    else:
+        raise ValueError("Version must contain 'trainval', 'mini', or 'test'.")
+
+    # 加载 NuScenes API
+    nusc = NuScenes(version=args.version, dataroot=args.root_path, verbose=True)
+    
+    # 循环处理 train, val, 或 test
+    for set_name in sets_to_convert:
+        is_train_set = (set_name != 'test')
+        print(f"Processing '{set_name}' set...")
+        
+        # 加载之前生成的 .pkl 文件
+        info_path = Path(args.root_path) / f'{args.info_prefix}_infos_{set_name}.pkl'
+        if not info_path.exists():
+            print(f"Error: Info file not found at {info_path}")
+            print("Please run create_data.py first to generate .pkl files.")
+            continue
+            
+        data = mmcv.load(str(info_path))
+        infos = data['infos']
+
+        # 调用我们刚刚添加的核心转换函数
+        _create_kitti_format_infos(
+            nusc=nusc,
+            infos=infos,
+            kitti_ann_path=args.out_dir,
+            out_dir=args.out_dir,
+            is_train=is_train_set
+        )
+
+    print("All tasks completed! ✨")

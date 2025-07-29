@@ -1130,6 +1130,8 @@ def loss(self, gt_bboxes_3d, gt_labels_3d, preds_dicts, ins_heatmap=None, **kwar
 
 ![1753813055579](image/report/1753813055579.png)
 
+此外，在项目文件下的`test/`文件夹中，我们有对模型的完整的测试等。
+
 至此，我们就实现了任务3和4的部分：实现模型推理与评估，并且得到了评估指标，推理输出了结果。
 
 ### 3.5 可视化与模型管理
@@ -1145,9 +1147,27 @@ tensorboard --logdir=./result
 
 ![1753827406755](image/report/1753827406755.png)
 
-我们可以看到，这里面train的时候，loss、grad、heatmap等指标都是下降的，ious指标是上升的。这表明我们训练过程真实有效。这样我们完成了任务4：支持训练过程中的损失曲线、mAP 曲线可视化；
+我们可以看到，这里面train的时候，loss、grad、heatmap等指标都是下降的，ious指标是上升的。这表明我们训练过程真实有效。这样我们完成了任务4：支持训练过程中的损失曲线、mAP 曲线可视化.
 
-此外，我们对检测框和真实框的可视化是通过`tools/test.py`完成的。这里面有--show和--show_dir，使得我们可以保存数据到目录。我们使用的是open3d进行的可视化。
+## 4. 问题/思考。
+
+看了我们的3D目标检测的发展历程，我们可以看到其挑战几乎也从来没有变过，基本上都是在纠结点云的那三个性质，无序性，稀疏性和不规则性。而点云则是表示我们3D信息最有效的一个输入。所以从这三个性质入手，我们会发现很多新的优化方法。
+
+我们的ISFusion是在BEVFusion的基础上，首次将“实例级别”和“场景级别”的多模态信息融合协同起来。它不会把前景和背景“一视同仁”，而是会根据实例的特征，来选择性地融合场景信息。这就有了更全面的特征表示（场景上的全面和实例上的全面），也可以进行协同工作，使得速度、准确度都有了一定的提升。此外，由于基于体素的voxel的方法（HSF模块）和其使用注意力机制（IGF模块），我们的鲁棒性和实时性都有了较大幅度的提升。
+
+由于本文是2024 CVPR论文，所以在此基础上做的工作并不多。我们可以简单分析以下它现存的问题，以及去哪里改正。
+
+首先，IS-Fusion证明了超越BEV场景级别，进行更精细化的“实例级别”融合是卓有成效的。也就是我们着重点可以放在具体的某个实例上面，使得实例的融合更加高效和全面，而非太在意背景。也就是说，瓶颈在实例融合。目前我们的IGF借鉴了transformer的几个结构，使用了注意力机制。这也向我们表明了，之后是否可以使用transformer来替代更多的板块，以期望计算开销的减小，然后提升对应的运行速度？然后是，目前的is-fusion还是一个双阶段的模型。如果可以提升为单阶段的，或者两个并行的阶段，那么就会有十分巨大的意义。这些都是基于其优点来说。
+
+然后，我们看到目前的IS-Fusion的一些缺点。首先就是计算开销大。我们是将场景体素化，并且又引入了transformer的注意力机制，这严重增加了计算量和计算负荷，使得我们变慢。如果针对自动驾驶等场景，实时性是一个必须要考虑的问题。就像r-cnn的二维目标检测的发展历程，我们三位也一定可以突破实时性的问题。
+
+第二个较大的问题，是多模态融合的问题，我们的IS-Fusion是基于LiDAR和Camera的融合，但是LiDAR和Camera的融合并不是一个简单的融合，而是需要考虑它们之间的对应关系。如果其中一个模态，或者维度被污染，就很容易出现噪声，使得数据出现较大的偏差。所以我们的这个问题急需解决。
+
+第三个问题，就是阶段性的问题了。我们的两阶段模型还是比较吃亏。现在较多任务都已经实现了端到端的流程，那么我们是否可以找到一个端到端的方法，去描述我们的这个目标检测问题呢？这是一个很值得思考的点。
+
+此外，面对一些小物体，比如小孩子，或者一些雨雪天气、被遮挡的物体等，模型表现还是欠佳。但是我们知道，如果未来在自动驾驶领域要出现突破，这些问题是都必须要考虑的。所以如何提升我们模型的泛化能力，也是一个重要的点。
+
+综上我们的几个问题，我们有针对性地进行了调研，但是近一年论文提供源码等少，所以我们也不确定是否有方法是大大改善了这些问题。但是这些问题，我们未来都可以进一步的思考，思考他们是否可行，思考我们改变这个模型是否可行。这些都是未来要做的工作了。
 
 ## 附录
 
@@ -1155,8 +1175,20 @@ tensorboard --logdir=./result
 
 1. [IS-Fusion：](https://github.com/yinjunbo/IS-Fusion)`https://github.com/yinjunbo/IS-Fusion`
 
-2. 
+2. [MMdetection3D](https://github.com/open-mmlab/mmdetection3d/tree/1.0)`https://github.com/open-mmlab/mmdetection3d/tree/1.0`
 
 ### 2. 参考论文
 
 1. [IS-Fusion：](https://openaccess.thecvf.com/content/CVPR2024/papers/Yin_IS-Fusion_Instance-Scene_Collaborative_Fusion_for_Multimodal_3D_Object_Detection_CVPR_2024_paper.pdf)`https://openaccess.thecvf.com/content/CVPR2024/papers/Yin_IS-Fusion_Instance-Scene_Collaborative_Fusion_for_Multimodal_3D_Object_Detection_CVPR_2024_paper.pdf`
+
+2. [Pointnet: ](https://openaccess.thecvf.com/content_cvpr_2017/html/Qi_PointNet_Deep_Learning_CVPR_2017_paper.html)`https://openaccess.thecvf.com/content_cvpr_2017/html/Qi_PointNet_Deep_Learning_CVPR_2017_paper.html`
+
+3. [SECOND](https://www.mdpi.com/1424-8220/18/10/3337?ref=https://codemonkey.link)`https://www.mdpi.com/1424-8220/18/10/3337?ref=https://codemonkey.link`
+
+4. [Pointnet++: ](https://proceedings.neurips.cc/paper/2017/hash/d8bf84be3800d12f74d8b05e9b89836f-Abstract.html)`https://proceedings.neurips.cc/paper/2017/hash/d8bf84be3800d12f74d8b05e9b89836f-Abstract.html`
+
+5. [PointRCNN: ](http://openaccess.thecvf.com/content_CVPR_2019/html/Shi_PointRCNN_3D_Object_Proposal_Generation_and_Detection_From_Point_Cloud_CVPR_2019_paper.html)`http://openaccess.thecvf.com/content_CVPR_2019/html/Shi_PointRCNN_3D_Object_Proposal_Generation_and_Detection_From_Point_Cloud_CVPR_2019_paper.html`
+
+6. [BEVFusion: ](https://arxiv.org/abs/2205.13542)`https://arxiv.org/abs/2205.13542`
+
+7. [BEVFusion: ](https://proceedings.neurips.cc/paper_files/paper/2022/hash/43d2b7fbee8431f7cef0d0afed51c691-Abstract-Conference.html)`https://proceedings.neurips.cc/paper_files/paper/2022/hash/43d2b7fbee8431f7cef0d0afed51c691-Abstract-Conference.html`

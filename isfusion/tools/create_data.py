@@ -101,125 +101,42 @@ def nuscenes_data_prep(root_path,
     create_groundtruth_database(dataset_name, root_path, info_prefix,
                                 f'{out_dir}/{info_prefix}_infos_train.pkl',
                                 with_bbox=True)
-
-
-def lyft_data_prep(root_path, info_prefix, version, max_sweeps=10):
-    """
-    准备 Lyft 数据集的相关数据。
-    主要任务是创建记录基本信息的 '.pkl' 文件。
-    尽管 Lyft 数据集通常不使用真值数据库和2D标注，但也可以像 nuScenes 一样生成它们。
-
-    Args:
-        root_path (str): 数据集根目录路径。
-        info_prefix (str): info 文件的前缀。
-        version (str): 数据集版本。
-        max_sweeps (int, optional): 每个样本最多包含的连续雷达扫描帧数。默认为 10。
-    """
-    # --- 创建 Lyft 的 info 文件 ---
-    lyft_converter.create_lyft_infos(
-        root_path, info_prefix, version=version, max_sweeps=max_sweeps)
-
-
-def scannet_data_prep(root_path, info_prefix, out_dir, workers):
-    """
-    为 ScanNet 室内场景数据集准备 info 文件。
-
-    Args:
-        root_path (str): 数据集根目录路径。
-        info_prefix (str): info 文件的前缀。
-        out_dir (str): 生成的 info 文件的输出目录。
-        workers (int): 使用的线程数。
-    """
-    # 调用 indoor_converter 来创建 ScanNet 的 .pkl 文件
-    indoor.create_indoor_info_file(
-        root_path, info_prefix, out_dir, workers=workers)
-
-
-def s3dis_data_prep(root_path, info_prefix, out_dir, workers):
-    """
-    为 S3DIS 室内场景数据集准备 info 文件。
-
-    Args:
-        root_path (str): 数据集根目录路径。
-        info_prefix (str): info 文件的前缀。
-        out_dir (str): 生成的 info 文件的输出目录。
-        workers (int): 使用的线程数。
-    """
-    # 调用 indoor_converter 来创建 S3DIS 的 .pkl 文件
-    indoor.create_indoor_info_file(
-        root_path, info_prefix, out_dir, workers=workers)
-
-
-def sunrgbd_data_prep(root_path, info_prefix, out_dir, workers):
-    """
-    为 SUN RGB-D 室内场景数据集准备 info 文件。
-
-    Args:
-        root_path (str): 数据集根目录路径。
-        info_prefix (str): info 文件的前缀。
-        out_dir (str): 生成的 info 文件的输出目录。
-        workers (int): 使用的线程数。
-    """
-    # 调用 indoor_converter 来创建 SUN RGB-D 的 .pkl 文件
-    indoor.create_indoor_info_file(
-        root_path, info_prefix, out_dir, workers=workers)
-
-
-def waymo_data_prep(root_path,
-                    info_prefix,
-                    version,
-                    out_dir,
-                    workers,
-                    max_sweeps=5):
-    """
-    为 Waymo Open Dataset 准备数据。
-    这个过程比较复杂，通常包括：
-    1. 将 Waymo 原生格式转换为 KITTI 格式，因为很多模型是基于 KITTI 格式开发的。
-    2. 基于转换后的 KITTI 格式数据生成 info 文件。
-    3. 创建真值数据库。
-
-    Args:
-        root_path (str): 数据集根目录路径。
-        info_prefix (str): info 文件的前缀。
-        out_dir (str): 生成的 info 文件的输出目录。
-        workers (int): 使用的线程数。
-        max_sweeps (int): 每个样本最多包含的连续雷达扫描帧数。默认为 5。
-    """
-    from tools.data_converter import waymo_converter as waymo
-    splits = ['training', 'validation', 'testing']
-    if version != 'v1.0-mini': # v1.0-mini 版本有不同的处理方式
-        # --- 将 Waymo 原生格式转换为 KITTI 格式 ---
-        for i, split in enumerate(splits):
-            load_dir = osp.join(root_path, 'waymo_format', split)
-            if split == 'validation':
-                # 在 KITTI 格式中，Waymo 的验证集通常也放在 training 文件夹下
-                save_dir = osp.join(out_dir, 'kitti_format', 'training')
-            else:
-                save_dir = osp.join(out_dir, 'kitti_format', split)
-            converter = waymo.Waymo2KITTI(
-                load_dir,
-                save_dir,
-                prefix=str(i),
-                workers=workers,
-                test_mode=(split == 'test'))
-            converter.convert()
-            
-    # --- 基于 KITTI 格式生成 Waymo 的 info 文件 ---
-    out_dir = osp.join(out_dir, 'kitti_format')
-    version_postfix = '' if version == 'v1.0' else '_mini'
-    info_prefix += version_postfix
-    # kitti.create_waymo_info_file(out_dir, info_prefix, max_sweeps=max_sweeps, \
-    #     version=version)
     
-    # --- 创建真值数据库 ---
-    create_groundtruth_database(
-        'WaymoDataset',
-        out_dir,
-        info_prefix,
-        f'{out_dir}/{info_prefix}_infos_train.pkl',
-        relative_path=False,
-        with_mask=False,
-        with_bbox=True)
+    # --- 添加的代码开始 ---
+    print('Start creating KITTI-style dataset...')
+
+    # 检查目标文件夹是否存在，如果不存在则创建
+    kitti_format_out_dir = osp.join(out_dir, 'kitti_format')
+    if not osp.exists(kitti_format_out_dir):
+        from pathlib import Path
+        Path(kitti_format_out_dir).mkdir(parents=True, exist_ok=True)
+
+    # 调用核心转换函数，将 .pkl 信息转换为 KITTI 格式
+    # 注意：这里的函数名可能是 _create_kitti_format_infos 或者其他类似名称
+    # 您需要根据您的 nuscenes_converter.py 文件确认
+    # 但在较新的版本中，这个功能通常集成在 create_nuscenes_infos 函数内部的一个参数控制
+    # 我们可以先尝试调用一个独立的函数
+    if version != 'v1.0-test':
+        # 转换训练集
+        info_train_path = osp.join(root_path, f'{info_prefix}_infos_train.pkl')
+        nuscenes_converter.export_to_kitti(
+            info_path=info_train_path,
+            root_path=root_path,
+            out_dir=kitti_format_out_dir,
+            info_prefix=info_prefix,
+            dataset_version=version
+        )
+        # 转换验证集
+        info_val_path = osp.join(root_path, f'{info_prefix}_infos_val.pkl')
+        nuscenes_converter.export_to_kitti(
+            info_path=info_val_path,
+            root_path=root_path,
+            out_dir=kitti_format_out_dir,
+            info_prefix=info_prefix,
+            dataset_version=version
+        )
+    # --- 添加的代码结束 ---
+
 
 
 # --- 命令行参数解析 ---
