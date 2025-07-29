@@ -83,7 +83,7 @@ def parse_args():
     parser.add_argument(
         '--bs',
         type=int,
-        default=1,
+        default=4,
         help='batch size')
     # 可选参数：评估指标
     parser.add_argument(

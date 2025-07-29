@@ -18,7 +18,11 @@ from .base import Base3DDetector
 
 @DETECTORS.register_module()
 class MVXTwoStageDetector(Base3DDetector):
-    """Base class of Multi-modality VoxelNet."""
+    """
+    MVXTwoStageDetector (多模态体素网络两阶段检测器) 的基类。
+    这是一个功能强大的检测器，能够同时处理点云和图像数据，
+    并通过两阶段的方式进行3D目标检测。
+    """
 
     def __init__(self,
                  pts_voxel_layer=None,
@@ -37,8 +41,27 @@ class MVXTwoStageDetector(Base3DDetector):
                  pretrained=None,
                  init_cfg=None,
                  **kwargs):
+        """
+        初始化函数，根据配置文件构建模型的各个组件。
+        
+        点云处理分支 (pts):
+        - pts_voxel_layer: 体素化层，将原始点云转换为规整的体素网格。
+        - pts_voxel_encoder: 体素编码器，为每个非空体素提取特征。
+        - pts_middle_encoder: 中间编码器，通常将稀疏的体素特征转换为密集的鸟瞰图(BEV)特征图。
+        - pts_fusion_layer: 特征融合层，用于融合来自不同模态(如图像)的特征。
+        - pts_backbone: 点云主干网络，在BEV特征图上进行深度特征提取。
+        - pts_neck: 点云颈部网络 (如FPN)，融合多尺度特征。
+        - pts_bbox_head: 3D检测头，根据最终特征预测3D边界框。
+
+        图像处理分支 (img):
+        - img_backbone: 图像主干网络 (如ResNet)，提取图像特征。
+        - img_neck: 图像颈部网络 (如FPN)，融合多尺度图像特征。
+        - img_rpn_head: 图像区域提议网络 (RPN)。
+        - img_roi_head: 图像感兴趣区域 (RoI) 头。
+        """
         super(MVXTwoStageDetector, self).__init__(init_cfg=init_cfg)
 
+        # 构建点云处理分支的各个模块
         if pts_voxel_layer:
             self.pts_voxel_layer = Voxelization(**pts_voxel_layer)
         if pts_voxel_encoder:
@@ -60,12 +83,14 @@ class MVXTwoStageDetector(Base3DDetector):
         if pts_neck is not None:
             self.pts_neck = builder.build_neck(pts_neck)
         if pts_bbox_head:
+            # 将训练和测试配置传递给检测头
             pts_train_cfg = train_cfg.pts if train_cfg else None
             pts_bbox_head.update(train_cfg=pts_train_cfg)
             pts_test_cfg = test_cfg.pts if test_cfg else None
             pts_bbox_head.update(test_cfg=pts_test_cfg)
             self.pts_bbox_head = builder.build_head(pts_bbox_head)
 
+        # 构建图像处理分支的各个模块
         if img_backbone:
             self.img_backbone = builder.build_backbone(img_backbone)
         if img_neck is not None:
@@ -75,6 +100,7 @@ class MVXTwoStageDetector(Base3DDetector):
         if img_roi_head is not None:
             self.img_roi_head = builder.build_head(img_roi_head)
 
+        # fusion_encoder 可能是一个额外的融合模块
         self.fusion_encoder = None
         fusion_encoder = kwargs.get('fusion_encoder', None)
         if fusion_encoder is not None:
@@ -83,6 +109,7 @@ class MVXTwoStageDetector(Base3DDetector):
         self.train_cfg = train_cfg
         self.test_cfg = test_cfg
 
+        # 处理预训练权重的加载
         if pretrained is None:
             img_pretrained = None
             pts_pretrained = None
@@ -116,108 +143,127 @@ class MVXTwoStageDetector(Base3DDetector):
 
     @property
     def with_img_shared_head(self):
-        """bool: Whether the detector has a shared head in image branch."""
+        """bool: 判断是否存在图像共享头。"""
         return hasattr(self,
                        'img_shared_head') and self.img_shared_head is not None
 
     @property
     def with_pts_bbox(self):
-        """bool: Whether the detector has a 3D box head."""
+        """bool: 判断是否存在3D点云检测头。"""
         return hasattr(self,
                        'pts_bbox_head') and self.pts_bbox_head is not None
 
     @property
     def with_img_bbox(self):
-        """bool: Whether the detector has a 2D image box head."""
+        """bool: 判断是否存在2D图像检测头。"""
         return hasattr(self,
                        'img_bbox_head') and self.img_bbox_head is not None
 
     @property
     def with_img_backbone(self):
-        """bool: Whether the detector has a 2D image backbone."""
+        """bool: 判断是否存在2D图像主干网络。"""
         return hasattr(self, 'img_backbone') and self.img_backbone is not None
 
     @property
     def with_pts_backbone(self):
-        """bool: Whether the detector has a 3D backbone."""
+        """bool: 判断是否存在3D点云主干网络。"""
         return hasattr(self, 'pts_backbone') and self.pts_backbone is not None
 
     @property
     def with_fusion(self):
-        """bool: Whether the detector has a fusion layer."""
+        """bool: 判断是否存在特征融合层。"""
         return hasattr(self,
                        'pts_fusion_layer') and self.fusion_layer is not None
 
     @property
     def with_img_neck(self):
-        """bool: Whether the detector has a neck in image branch."""
+        """bool: 判断是否存在图像颈部网络。"""
         return hasattr(self, 'img_neck') and self.img_neck is not None
 
     @property
     def with_pts_neck(self):
-        """bool: Whether the detector has a neck in 3D detector branch."""
+        """bool: 判断是否存在点云颈部网络。"""
         return hasattr(self, 'pts_neck') and self.pts_neck is not None
 
     @property
     def with_img_rpn(self):
-        """bool: Whether the detector has a 2D RPN in image detector branch."""
+        """bool: 判断是否存在图像RPN。"""
         return hasattr(self, 'img_rpn_head') and self.img_rpn_head is not None
 
     @property
     def with_img_roi_head(self):
-        """bool: Whether the detector has a RoI Head in image branch."""
+        """bool: 判断是否存在图像RoI头。"""
         return hasattr(self, 'img_roi_head') and self.img_roi_head is not None
 
     @property
     def with_voxel_encoder(self):
-        """bool: Whether the detector has a voxel encoder."""
+        """bool: 判断是否存在体素编码器。"""
         return hasattr(self,
                        'voxel_encoder') and self.voxel_encoder is not None
 
     @property
     def with_middle_encoder(self):
-        """bool: Whether the detector has a middle encoder."""
+        """bool: 判断是否存在中间编码器。"""
         return hasattr(self,
                        'middle_encoder') and self.middle_encoder is not None
 
     def extract_img_feat(self, img, img_metas):
-        """Extract features of images."""
+        """
+        提取图像特征的完整流程。
+        流程: img_backbone -> img_neck
+        """
         if img is not None and img.dtype == torch.double:
             img = img.float()
         if self.with_img_backbone and img is not None:
             input_shape = img.shape[-2:]
-            # update real input shape of each single img
+            # 更新每个图像的真实输入尺寸
             for img_meta in img_metas:
                 img_meta.update(input_shape=input_shape)
 
+            # 处理多视角图像输入 (B, N, C, H, W) -> (B*N, C, H, W)
             if img.dim() == 5 and img.size(0) == 1:
                 img.squeeze_()
             elif img.dim() == 5 and img.size(0) > 1:
                 B, N, C, H, W = img.size()
                 img = img.view(B * N, C, H, W)
+            
+            # 1. 通过主干网络提取特征
             img_feats = self.img_backbone(img)
         else:
             return None
+        # 2. 通过颈部网络融合特征
         if self.with_img_neck:
             img_feats = self.img_neck(img_feats)
         return img_feats
 
     def extract_pts_feat(self, pts, img_feats, img_metas):
-        """Extract features of points."""
+        """
+        提取点云特征的完整流程。
+        流程: voxelize -> pts_voxel_encoder -> pts_middle_encoder -> pts_backbone -> pts_neck
+        """
         if not self.with_pts_bbox:
             return None
+        # 1. 体素化: 将点云从点空间转换到体素空间
         voxels, num_points, coors = self.voxelize(pts)
+        # 2. 体素编码: 为每个体素生成特征向量。
+        #    注意：这里可能会传入 img_feats，实现点云和图像特征的早期融合。
         voxel_features = self.pts_voxel_encoder(voxels, num_points, coors,
                                                 img_feats, img_metas)
         batch_size = coors[-1, 0] + 1
+        # 3. 中间编码器: 将稀疏的体素特征转换为密集的BEV特征图
         x = self.pts_middle_encoder(voxel_features, coors, batch_size)
+        # 4. 点云主干网络: 在BEV特征图上进行深度特征提取
         x = self.pts_backbone(x)
+        # 5. 点云颈部网络: 融合多尺度BEV特征
         if self.with_pts_neck:
             x = self.pts_neck(x)
         return x
 
     def extract_feat(self, points, img, img_metas):
-        """Extract features from images and points."""
+        """
+        从图像和点云中并行提取特征。
+        这是模型特征提取的总入口。
+        """
         img_feats = self.extract_img_feat(img, img_metas)
         pts_feats = self.extract_pts_feat(points, img_feats, img_metas)
         return (img_feats, pts_feats)
@@ -225,14 +271,14 @@ class MVXTwoStageDetector(Base3DDetector):
     @torch.no_grad()
     @force_fp32()
     def voxelize(self, points):
-        """Apply dynamic voxelization to points.
-
+        """
+        对点云进行动态体素化。
+        
         Args:
-            points (list[torch.Tensor]): Points of each sample.
+            points (list[torch.Tensor]): 每个样本的点云列表。
 
         Returns:
-            tuple[torch.Tensor]: Concatenated points, number of points
-                per voxel, and coordinates.
+            tuple[torch.Tensor]: 体素、每个体素的点数、体素坐标。
         """
         voxels, coors, num_points = [], [], []
         for res in points:
@@ -244,6 +290,7 @@ class MVXTwoStageDetector(Base3DDetector):
         num_points = torch.cat(num_points, dim=0)
         coors_batch = []
         for i, coor in enumerate(coors):
+            # 为每个样本的体素坐标添加 batch_id
             coor_pad = F.pad(coor, (1, 0), mode='constant', value=i)
             coors_batch.append(coor_pad)
         coors_batch = torch.cat(coors_batch, dim=0)
@@ -259,39 +306,34 @@ class MVXTwoStageDetector(Base3DDetector):
                       img=None,
                       proposals=None,
                       gt_bboxes_ignore=None):
-        """Forward training function.
+        """
+        训练时的前向传播函数。
 
         Args:
-            points (list[torch.Tensor], optional): Points of each sample.
-                Defaults to None.
-            img_metas (list[dict], optional): Meta information of each sample.
-                Defaults to None.
-            gt_bboxes_3d (list[:obj:`BaseInstance3DBoxes`], optional):
-                Ground truth 3D boxes. Defaults to None.
-            gt_labels_3d (list[torch.Tensor], optional): Ground truth labels
-                of 3D boxes. Defaults to None.
-            gt_labels (list[torch.Tensor], optional): Ground truth labels
-                of 2D boxes in images. Defaults to None.
-            gt_bboxes (list[torch.Tensor], optional): Ground truth 2D boxes in
-                images. Defaults to None.
-            img (torch.Tensor optional): Images of each sample with shape
-                (N, C, H, W). Defaults to None.
-            proposals ([list[torch.Tensor], optional): Predicted proposals
-                used for training Fast RCNN. Defaults to None.
-            gt_bboxes_ignore (list[torch.Tensor], optional): Ground truth
-                2D boxes in images to be ignored. Defaults to None.
+            points (list[torch.Tensor]): 输入的点云。
+            img_metas (list[dict]): 样本的元信息。
+            gt_bboxes_3d (list[:obj:`BaseInstance3DBoxes`]): 3D真值框。
+            gt_labels_3d (list[torch.Tensor]): 3D真值标签。
+            img (torch.Tensor): 输入的图像。
+            ... (其他2D相关的真值和提议)
 
         Returns:
-            dict: Losses of different branches.
+            dict: 包含所有分支损失的字典。
         """
+        # 1. 并行提取图像和点云的特征
         img_feats, pts_feats = self.extract_feat(
             points, img=img, img_metas=img_metas)
+        
         losses = dict()
+        
+        # 2. 处理点云分支，计算3D检测损失
         if pts_feats:
             losses_pts = self.forward_pts_train(pts_feats, gt_bboxes_3d,
                                                 gt_labels_3d, img_metas,
                                                 gt_bboxes_ignore)
             losses.update(losses_pts)
+            
+        # 3. 处理图像分支，计算2D检测损失 (如果存在)
         if img_feats:
             losses_img = self.forward_img_train(
                 img_feats,
@@ -301,6 +343,7 @@ class MVXTwoStageDetector(Base3DDetector):
                 gt_bboxes_ignore=gt_bboxes_ignore,
                 proposals=proposals)
             losses.update(losses_img)
+            
         return losses
 
     def forward_pts_train(self,
@@ -309,23 +352,15 @@ class MVXTwoStageDetector(Base3DDetector):
                           gt_labels_3d,
                           img_metas,
                           gt_bboxes_ignore=None):
-        """Forward function for point cloud branch.
-
-        Args:
-            pts_feats (list[torch.Tensor]): Features of point cloud branch
-            gt_bboxes_3d (list[:obj:`BaseInstance3DBoxes`]): Ground truth
-                boxes for each sample.
-            gt_labels_3d (list[torch.Tensor]): Ground truth labels for
-                boxes of each sampole
-            img_metas (list[dict]): Meta information of samples.
-            gt_bboxes_ignore (list[torch.Tensor], optional): Ground truth
-                boxes to be ignored. Defaults to None.
-
-        Returns:
-            dict: Losses of each branch.
         """
+        点云分支的训练前向传播。
+        流程: pts_feats -> pts_bbox_head -> loss
+        """
+        # 1. 将点云特征送入3D检测头得到预测输出
         outs = self.pts_bbox_head(pts_feats)
+        # 2. 准备计算损失所需的输入 (预测+真值)
         loss_inputs = outs + (gt_bboxes_3d, gt_labels_3d, img_metas)
+        # 3. 调用检测头的 loss 函数计算损失
         losses = self.pts_bbox_head.loss(
             *loss_inputs, gt_bboxes_ignore=gt_bboxes_ignore)
         return losses
@@ -338,27 +373,12 @@ class MVXTwoStageDetector(Base3DDetector):
                           gt_bboxes_ignore=None,
                           proposals=None,
                           **kwargs):
-        """Forward function for image branch.
-
-        This function works similar to the forward function of Faster R-CNN.
-
-        Args:
-            x (list[torch.Tensor]): Image features of shape (B, C, H, W)
-                of multiple levels.
-            img_metas (list[dict]): Meta information of images.
-            gt_bboxes (list[torch.Tensor]): Ground truth boxes of each image
-                sample.
-            gt_labels (list[torch.Tensor]): Ground truth labels of boxes.
-            gt_bboxes_ignore (list[torch.Tensor], optional): Ground truth
-                boxes to be ignored. Defaults to None.
-            proposals (list[torch.Tensor], optional): Proposals of each sample.
-                Defaults to None.
-
-        Returns:
-            dict: Losses of each branch.
+        """
+        图像分支的训练前向传播 (类似于Faster R-CNN)。
+        流程: img_feats -> RPN -> RoI Head -> loss
         """
         losses = dict()
-        # RPN forward and loss
+        # 1. RPN 前向传播和损失计算
         if self.with_img_rpn:
             rpn_outs = self.img_rpn_head(x)
             rpn_loss_inputs = rpn_outs + (gt_bboxes, img_metas,
@@ -374,9 +394,8 @@ class MVXTwoStageDetector(Base3DDetector):
         else:
             proposal_list = proposals
 
-        # bbox head forward and loss
+        # 2. RoI Head (BBox Head) 前向传播和损失计算
         if self.with_img_bbox:
-            # bbox head forward and loss
             img_roi_losses = self.img_roi_head.forward_train(
                 x, img_metas, proposal_list, gt_bboxes, gt_labels,
                 gt_bboxes_ignore, **kwargs)
@@ -385,7 +404,7 @@ class MVXTwoStageDetector(Base3DDetector):
         return losses
 
     def simple_test_img(self, x, img_metas, proposals=None, rescale=False):
-        """Test without augmentation."""
+        """图像分支的无数据增强测试。"""
         if proposals is None:
             proposal_list = self.simple_test_rpn(x, img_metas,
                                                  self.test_cfg.img_rpn)
@@ -396,19 +415,22 @@ class MVXTwoStageDetector(Base3DDetector):
             x, proposal_list, img_metas, rescale=rescale)
 
     def simple_test_rpn(self, x, img_metas, rpn_test_cfg):
-        """RPN test function."""
+        """RPN的测试函数。"""
         rpn_outs = self.img_rpn_head(x)
         proposal_inputs = rpn_outs + (img_metas, rpn_test_cfg)
         proposal_list = self.img_rpn_head.get_bboxes(*proposal_inputs)
         return proposal_list
 
     def simple_test_pts(self, x, img_metas, rescale=False):
-        """Test function of point cloud branch."""
+        """点云分支的无数据增强测试。"""
+        # 1. 将特征送入检测头获得预测
         outs = self.pts_bbox_head(x)
         if img_metas[0]is None:
             return outs
+        # 2. 使用 get_bboxes 方法获取格式化的检测结果
         bbox_list = self.pts_bbox_head.get_bboxes(
             *outs, img_metas, rescale=rescale)
+        # 3. 将结果转换为标准格式
         bbox_results = [
             bbox3d2result(bboxes, scores, labels)
             for bboxes, scores, labels in bbox_list
@@ -416,11 +438,15 @@ class MVXTwoStageDetector(Base3DDetector):
         return bbox_results
 
     def simple_test(self, points, img_metas, img=None, rescale=False):
-        """Test function without augmentaiton."""
+        """
+        无数据增强的完整测试函数。
+        """
+        # 1. 提取图像和点云特征
         img_feats, pts_feats = self.extract_feat(
             points, img=img, img_metas=img_metas)
 
         bbox_list = [dict() for i in range(len(img_metas))]
+        # 2. 如果存在点云分支，进行3D检测
         if pts_feats and self.with_pts_bbox:
             bbox_pts = self.simple_test_pts(
                 pts_feats, img_metas, rescale=rescale)
@@ -428,6 +454,7 @@ class MVXTwoStageDetector(Base3DDetector):
                 return bbox_pts
             for result_dict, pts_bbox in zip(bbox_list, bbox_pts):
                 result_dict['pts_bbox'] = pts_bbox
+        # 3. 如果存在图像分支，进行2D检测
         if img_feats and self.with_img_bbox:
             bbox_img = self.simple_test_img(
                 img_feats, img_metas, rescale=rescale)
@@ -436,7 +463,7 @@ class MVXTwoStageDetector(Base3DDetector):
         return bbox_list
 
     def aug_test(self, points, img_metas, imgs=None, rescale=False):
-        """Test function with augmentaiton."""
+        """带数据增强的测试函数。"""
         img_feats, pts_feats = self.extract_feats(points, img_metas, imgs)
 
         bbox_list = dict()
@@ -446,7 +473,7 @@ class MVXTwoStageDetector(Base3DDetector):
         return [bbox_list]
 
     def extract_feats(self, points, img_metas, imgs=None):
-        """Extract point and image features of multiple samples."""
+        """为多个样本（在数据增强测试中使用）提取特征。"""
         if imgs is None:
             imgs = [None] * len(img_metas)
         img_feats, pts_feats = multi_apply(self.extract_feat, points, imgs,
@@ -454,8 +481,8 @@ class MVXTwoStageDetector(Base3DDetector):
         return img_feats, pts_feats
 
     def aug_test_pts(self, feats, img_metas, rescale=False, **kwargs):
-        """Test function of point cloud branch with augmentaiton."""
-        # only support aug_test for one sample
+        """带数据增强的点云分支测试函数。"""
+        # 目前只支持单样本的增强测试
         aug_bboxes = []
         for x, img_meta in zip(feats, img_metas):
             outs = self.pts_bbox_head(x)
@@ -467,18 +494,15 @@ class MVXTwoStageDetector(Base3DDetector):
             ]
             aug_bboxes.append(bbox_list[0])
 
-        # after merging, bboxes will be rescaled to the original image size
+        # 合并多个增强结果
         merged_bboxes = merge_aug_bboxes_3d(aug_bboxes, img_metas,
                                             self.pts_bbox_head.test_cfg)
         return merged_bboxes
 
     def show_results(self, data, result, out_dir):
-        """Results visualization.
-
-        Args:
-            data (dict): Input points and the information of the sample.
-            result (dict): Prediction results.
-            out_dir (str): Output directory of visualization result.
+        """
+        结果可视化。
+        将点云和预测的3D边界框保存为文件，以便查看。
         """
         for batch_id in range(len(result)):
             if isinstance(data['points'][0], DC):
@@ -503,10 +527,11 @@ class MVXTwoStageDetector(Base3DDetector):
             file_name = osp.split(pts_filename)[-1].split('.')[0]
 
             assert out_dir is not None, 'Expect out_dir, got none.'
+            # 根据得分阈值筛选预测框
             inds = result[batch_id]['pts_bbox']['scores_3d'] > 0.1
             pred_bboxes = result[batch_id]['pts_bbox']['boxes_3d'][inds]
 
-            # for now we convert points and bbox into depth mode
+            # 为了可视化，将点和框转换到深度相机坐标系
             if (box_mode_3d == Box3DMode.CAM) or (box_mode_3d
                                                   == Box3DMode.LIDAR):
                 points = Coord3DMode.convert_point(points, Coord3DMode.LIDAR,
@@ -518,4 +543,5 @@ class MVXTwoStageDetector(Base3DDetector):
                     f'Unsupported box_mode_3d {box_mode_3d} for convertion!')
 
             pred_bboxes = pred_bboxes.tensor.cpu().numpy()
+            #调用可视化函数
             show_result(points, None, pred_bboxes, out_dir, file_name)
